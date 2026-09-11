@@ -7,10 +7,192 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestProcessPrintsVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		version     string
+		wantVersion string
+	}{
+		{name: "default", wantVersion: "dev"},
+		{name: "injected", version: "v0.1.0", wantVersion: "v0.1.0"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			binary := buildFpinWithVersion(t, tc.version)
+			cmd := exec.Command(binary, "--version")
+			cmd.Stdin = strings.NewReader("stdin must not be read")
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+
+			err := cmd.Run()
+			if err != nil {
+				t.Fatalf("command failed: %v; stderr = %q", err, stderr.String())
+			}
+			if got, want := stdout.String(), "fpin "+tc.wantVersion+"\n"; got != want {
+				t.Fatalf("stdout = %q, want %q", got, want)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunVersionDoesNotReadStdinOrCreateOutput(t *testing.T) {
+	stdin := &trackingReader{}
+	var stdout, stderr bytes.Buffer
+	var temporaryCreated, destinationCreated bool
+	createTemporary := func() (string, io.WriteCloser, error) {
+		temporaryCreated = true
+		return "unexpected-temporary", &trackingWriteCloser{}, nil
+	}
+	createDestination := func(string) (io.WriteCloser, error) {
+		destinationCreated = true
+		return &trackingWriteCloser{}, nil
+	}
+
+	code := runWithCreators([]string{"--version"}, stdin, &stdout, &stderr, createTemporary, createDestination)
+	if code != 0 {
+		t.Fatalf("runWithCreators() exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "fpin dev\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if stdin.read {
+		t.Fatal("version command read stdin")
+	}
+	if temporaryCreated || destinationCreated {
+		t.Fatalf("version command created output: temporary=%v destination=%v", temporaryCreated, destinationCreated)
+	}
+}
+
+func TestProcessReportsVersionOutputClosure(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "js" || runtime.GOOS == "plan9" || runtime.GOOS == "wasip1" {
+		t.Skip("closed stdout pipe behavior is Unix-specific")
+	}
+
+	binary := buildFpinWithVersion(t, "")
+	cmd := exec.Command(binary, "--version")
+	stdoutRead, stdoutWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stdoutRead.Close(); err != nil {
+		_ = stdoutWrite.Close()
+		t.Fatal(err)
+	}
+	cmd.Stdout = stdoutWrite
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		_ = stdoutWrite.Close()
+		t.Fatal(err)
+	}
+	if err := stdoutWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		<-waitDone
+		t.Fatal("timed out waiting for version command after stdout closure")
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(waitErr, &exitErr) {
+		t.Fatalf("wait error = %v, want exit status 1; stderr = %q", waitErr, stderr.String())
+	}
+	if got, want := exitErr.ExitCode(), 1; got != want {
+		t.Fatalf("exit code = %d, want %d; stderr = %q", got, want, stderr.String())
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("stderr is empty, want output-write diagnostic")
+	}
+}
+
+func TestRunRejectsVersionWithOtherArgumentsWithoutChangingDestination(t *testing.T) {
+	destination := filepath.Join(absoluteTempDir(t), "output.txt")
+	if err := os.WriteFile(destination, []byte("keep me"), 0o600); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+
+	for _, args := range [][]string{
+		{"--version", destination},
+		{destination, "--version"},
+		{"--version", "--version"},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := run(args, &trackingReader{}, &stdout, &stderr)
+		if code != 1 {
+			t.Fatalf("args %q: run() exit code = %d, want 1", args, code)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("args %q: stdout = %q, want empty", args, stdout.String())
+		}
+		if stderr.Len() == 0 {
+			t.Fatalf("args %q: stderr is empty, want diagnostic", args)
+		}
+		if got, err := os.ReadFile(destination); err != nil {
+			t.Fatalf("args %q: read destination: %v", args, err)
+		} else if want := "keep me"; string(got) != want {
+			t.Fatalf("args %q: destination = %q, want %q", args, got, want)
+		}
+	}
+}
+
+func TestRunReportsVersionStdoutFailureWithoutReadingStdinOrCreatingOutput(t *testing.T) {
+	stdin := &trackingReader{}
+	var stderr bytes.Buffer
+	var temporaryCreated, destinationCreated bool
+	createTemporary := func() (string, io.WriteCloser, error) {
+		temporaryCreated = true
+		return "unexpected-temporary", &trackingWriteCloser{}, nil
+	}
+	createDestination := func(string) (io.WriteCloser, error) {
+		destinationCreated = true
+		return &trackingWriteCloser{}, nil
+	}
+
+	code := runWithCreators(
+		[]string{"--version"},
+		stdin,
+		&errorWriter{err: errors.New("stdout failed")},
+		&stderr,
+		createTemporary,
+		createDestination,
+	)
+	if code != 1 {
+		t.Fatalf("runWithCreators() exit code = %d, want 1", code)
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("stderr is empty, want diagnostic")
+	}
+	if stdin.read {
+		t.Fatal("version command read stdin")
+	}
+	if temporaryCreated || destinationCreated {
+		t.Fatalf("version command created output: temporary=%v destination=%v", temporaryCreated, destinationCreated)
+	}
+}
 
 func TestRunCreatesTemporaryFile(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -456,4 +638,40 @@ func createTemporary() (string, io.WriteCloser, error) {
 
 func createDestination(path string) (io.WriteCloser, error) {
 	return os.Create(path)
+}
+
+func buildFpinWithVersion(t *testing.T, injected string) string {
+	t.Helper()
+	binaryName := "fpin"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binary := filepath.Join(t.TempDir(), binaryName)
+	args := []string{"build", "-o", binary}
+	if injected != "" {
+		args = append(args, "-ldflags", "-X main.version="+injected)
+	}
+	args = append(args, ".")
+	command := exec.Command("go", args...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, output)
+	}
+	return binary
+}
+
+type trackingReader struct {
+	read bool
+}
+
+func (r *trackingReader) Read([]byte) (int, error) {
+	r.read = true
+	return 0, errors.New("stdin should not be read")
+}
+
+type trackingWriteCloser struct {
+	bytes.Buffer
+}
+
+func (w *trackingWriteCloser) Close() error {
+	return nil
 }

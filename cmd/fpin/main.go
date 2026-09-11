@@ -12,6 +12,8 @@ import (
 type temporaryFileCreator func() (string, io.WriteCloser, error)
 type destinationFileCreator func(string) (io.WriteCloser, error)
 
+var version = "dev"
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
@@ -30,6 +32,14 @@ func runWithCreators(
 	if len(args) > 1 {
 		fmt.Fprintln(stderr, "fpin: expected at most one destination file")
 		return 1
+	}
+	if len(args) == 1 && args[0] == "--version" {
+		ignoreSIGPIPE()
+		if _, err := fmt.Fprintf(stdout, "fpin %s\n", version); err != nil {
+			reportError(stderr, "write version", err)
+			return 1
+		}
+		return 0
 	}
 
 	temporary := len(args) == 0
