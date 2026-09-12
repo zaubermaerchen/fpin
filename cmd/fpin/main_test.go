@@ -626,6 +626,75 @@ func TestRunCreatesTemporaryFile(t *testing.T) {
 	}
 }
 
+func TestRunPreservesBinaryInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []byte
+	}{
+		{name: "empty", input: []byte{}},
+		{name: "mixed", input: []byte{0x00, 0xff, 0x80, 'a', '\r', '\n', 'b', '\n', 0x01}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, destination := range []bool{false, true} {
+				name := "temporary"
+				if destination {
+					name = "destination"
+				}
+				t.Run(name, func(t *testing.T) {
+					want := append([]byte(nil), tc.input...)
+					var args []string
+					var destinationPath string
+					if destination {
+						destinationPath = filepath.Join(absoluteTempDir(t), "output.bin")
+						args = []string{destinationPath}
+						seed := append(append([]byte(nil), want...), 0xde, 0xad, 0xbe, 0xef)
+						if err := os.WriteFile(destinationPath, seed, 0o600); err != nil {
+							t.Fatalf("seed destination: %v", err)
+						}
+					}
+
+					var stdout, stderr bytes.Buffer
+					code := run(args, bytes.NewReader(tc.input), &stdout, &stderr)
+					if code != 0 {
+						t.Fatalf("run() exit code = %d, want 0; stderr = %q", code, stderr.String())
+					}
+					if stderr.Len() != 0 {
+						t.Fatalf("stderr = %q, want empty", stderr.String())
+					}
+					if !bytes.HasSuffix(stdout.Bytes(), []byte{'\n'}) {
+						t.Fatalf("stdout = %q, want path followed by newline", stdout.Bytes())
+					}
+					path := string(stdout.Bytes()[:len(stdout.Bytes())-1])
+					if !filepath.IsAbs(path) {
+						t.Fatalf("path = %q, want absolute path", path)
+					}
+					if destination {
+						absolute, err := filepath.Abs(destinationPath)
+						if err != nil {
+							t.Fatalf("make destination absolute: %v", err)
+						}
+						if path != absolute {
+							t.Fatalf("path = %q, want %q", path, absolute)
+						}
+					} else {
+						t.Cleanup(func() { _ = os.Remove(path) })
+					}
+
+					got, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatalf("read output file: %v", err)
+					}
+					if !bytes.Equal(got, want) {
+						t.Fatalf("output file = %x, want %x", got, want)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestRunWritesAndOverwritesDestination(t *testing.T) {
 	temporaryRoot, err := os.MkdirTemp(".", "fpin-test-")
 	if err != nil {
