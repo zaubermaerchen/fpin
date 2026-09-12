@@ -16,11 +16,25 @@ type destinationFileCreator func(string) (io.WriteCloser, error)
 type commandOptions struct {
 	destination    string
 	hasDestination bool
+	help           bool
 	nullTerminated bool
 	version        bool
 }
 
 var version = "dev"
+
+const helpText = `Usage:
+  fpin [OPTIONS] [FILE]
+
+Save stdin to a file and print its absolute path.
+
+Options:
+  -0, --null     terminate the output path with NUL instead of newline
+  -h, --help     show help
+      --version  show version
+
+If FILE is omitted, fpin creates a file in the OS temporary directory.
+`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -41,6 +55,14 @@ func runWithCreators(
 	if err != nil {
 		reportError(stderr, "invalid arguments", err)
 		return 1
+	}
+	if options.help {
+		ignoreSIGPIPE()
+		if _, err := fmt.Fprint(stdout, helpText); err != nil {
+			reportError(stderr, "write help", err)
+			return 1
+		}
+		return 0
 	}
 	if options.version {
 		ignoreSIGPIPE()
@@ -105,8 +127,13 @@ func runWithCreators(
 }
 
 func parseArguments(args []string) (commandOptions, error) {
-	if len(args) == 1 && args[0] == "--version" {
-		return commandOptions{version: true}, nil
+	if len(args) == 1 {
+		switch args[0] {
+		case "-h", "--help":
+			return commandOptions{help: true}, nil
+		case "--version":
+			return commandOptions{version: true}, nil
+		}
 	}
 
 	var options commandOptions
@@ -137,6 +164,8 @@ func parseArguments(args []string) (commandOptions, error) {
 			options.nullTerminated = true
 		case "--version":
 			return commandOptions{}, fmt.Errorf("--version must be used alone")
+		case "-h", "--help":
+			return commandOptions{}, fmt.Errorf("%s must be used alone", arg)
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return commandOptions{}, fmt.Errorf("unknown option %q", arg)
