@@ -45,7 +45,7 @@ For arbitrary path names, use NUL mode with `xargs -0`:
 records=$(mktemp) || exit 1
 trap 'rm -f "$records"' EXIT
 set -o pipefail
-if ! producer | fpin -0 >"$records"; then
+if ! producer | fpin --null >"$records"; then
   exit 1
 fi
 xargs -0 -n 1 use-command <"$records"
