@@ -7,10 +7,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type temporaryFileCreator func() (string, io.WriteCloser, error)
 type destinationFileCreator func(string) (io.WriteCloser, error)
+
+type commandOptions struct {
+	destination    string
+	hasDestination bool
+	nullTerminated bool
+	version        bool
+}
 
 var version = "dev"
 
@@ -29,11 +37,12 @@ func runWithCreators(
 	createTemporary temporaryFileCreator,
 	createDestination destinationFileCreator,
 ) int {
-	if len(args) > 1 {
-		fmt.Fprintln(stderr, "fpin: expected at most one destination file")
+	options, err := parseArguments(args)
+	if err != nil {
+		reportError(stderr, "invalid arguments", err)
 		return 1
 	}
-	if len(args) == 1 && args[0] == "--version" {
+	if options.version {
 		ignoreSIGPIPE()
 		if _, err := fmt.Fprintf(stdout, "fpin %s\n", version); err != nil {
 			reportError(stderr, "write version", err)
@@ -42,11 +51,10 @@ func runWithCreators(
 		return 0
 	}
 
-	temporary := len(args) == 0
+	temporary := !options.hasDestination
 	var path string
 	var temporaryPath string
 	var output io.WriteCloser
-	var err error
 	if temporary {
 		temporaryPath, output, err = createTemporary()
 		path = temporaryPath
@@ -54,7 +62,7 @@ func runWithCreators(
 			path, err = filepath.Abs(temporaryPath)
 		}
 	} else {
-		path, err = filepath.Abs(args[0])
+		path, err = filepath.Abs(options.destination)
 		if err == nil {
 			output, err = createDestination(path)
 		}
@@ -88,11 +96,75 @@ func runWithCreators(
 		return 1
 	}
 
-	if _, err := fmt.Fprintln(stdout, path); err != nil {
+	ignoreSIGPIPE()
+	if err := writeOutputPath(stdout, path, options.nullTerminated); err != nil {
 		reportError(stderr, "write output path", err)
 		return 1
 	}
 	return 0
+}
+
+func parseArguments(args []string) (commandOptions, error) {
+	if len(args) == 1 && args[0] == "--version" {
+		return commandOptions{version: true}, nil
+	}
+
+	var options commandOptions
+	separator := false
+	for _, arg := range args {
+		if separator {
+			if options.hasDestination {
+				return commandOptions{}, fmt.Errorf("expected at most one destination file")
+			}
+			options.destination = arg
+			options.hasDestination = true
+			continue
+		}
+
+		switch arg {
+		case "--":
+			if options.hasDestination {
+				return commandOptions{}, fmt.Errorf("option separator must precede destination file")
+			}
+			separator = true
+		case "-0", "--null":
+			if options.nullTerminated {
+				return commandOptions{}, fmt.Errorf("null output option specified more than once")
+			}
+			if options.hasDestination {
+				return commandOptions{}, fmt.Errorf("options must precede destination file")
+			}
+			options.nullTerminated = true
+		case "--version":
+			return commandOptions{}, fmt.Errorf("--version must be used alone")
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return commandOptions{}, fmt.Errorf("unknown option %q", arg)
+			}
+			if options.hasDestination {
+				return commandOptions{}, fmt.Errorf("expected at most one destination file")
+			}
+			options.destination = arg
+			options.hasDestination = true
+		}
+	}
+	return options, nil
+}
+
+func writeOutputPath(stdout io.Writer, path string, nullTerminated bool) error {
+	terminator := byte('\n')
+	if nullTerminated {
+		terminator = 0
+	}
+	output := make([]byte, len(path)+1)
+	copy(output, path)
+	output[len(path)] = terminator
+	if n, err := stdout.Write(output); err != nil {
+		return err
+	} else if n != len(output) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func createTemporaryFile() (string, io.WriteCloser, error) {
