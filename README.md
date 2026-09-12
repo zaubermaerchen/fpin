@@ -5,12 +5,22 @@
 ## Usage
 
 ```text
-fpin [-0|--null] [--] [FILE]
+Usage:
+  fpin [OPTIONS] [FILE]
+
+Save stdin to a file and print its absolute path.
+
+Options:
+  -0, --null     terminate the output path with NUL instead of newline
+  -h, --help     show help
+      --version  show version
 ```
 
-With no arguments, `fpin` writes standard input to a new temporary file. With `FILE`, it writes to that path, overwriting an existing file. Parent directories are not created. On success, the absolute output path followed by a newline is written to standard output.
+If `FILE` is omitted, `fpin` writes standard input to a new file in the OS temporary directory. With `FILE`, it writes to that path, overwriting an existing file. Parent directories are not created. On success, the absolute output path followed by a newline is written to standard output.
 
 Use `-0` or `--null` to terminate the successful output path with a single NUL byte instead of a newline. Options must precede `FILE`; `--` ends option parsing so a destination beginning with `-` can be used. Unknown or duplicate options, extra arguments, and combining `--version` with any other argument fail without reading standard input or changing a destination.
+
+Use `-h` or `--help` to display usage and options without reading standard input or creating an output file. Help must be used alone; `-- --help` and `-- -h` treat those strings as literal destination paths.
 
 ### Behavior
 

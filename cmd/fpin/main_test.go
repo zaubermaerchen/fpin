@@ -79,6 +79,58 @@ func TestRunVersionDoesNotReadStdinOrCreateOutput(t *testing.T) {
 	}
 }
 
+func TestRunPrintsHelpWithoutReadingStdinOrCreatingOutput(t *testing.T) {
+	var want string
+	for _, arg := range []string{"-h", "--help"} {
+		t.Run(arg, func(t *testing.T) {
+			stdin := &trackingReader{}
+			var stdout, stderr bytes.Buffer
+			var temporaryCreated, destinationCreated bool
+			createTemporary := func() (string, io.WriteCloser, error) {
+				temporaryCreated = true
+				return "unexpected-temporary", &trackingWriteCloser{}, nil
+			}
+			createDestination := func(string) (io.WriteCloser, error) {
+				destinationCreated = true
+				return &trackingWriteCloser{}, nil
+			}
+
+			code := runWithCreators([]string{arg}, stdin, &stdout, &stderr, createTemporary, createDestination)
+			if code != 0 {
+				t.Fatalf("runWithCreators() exit code = %d, want 0; stderr = %q", code, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+			if stdin.read {
+				t.Fatal("help command read stdin")
+			}
+			if temporaryCreated || destinationCreated {
+				t.Fatalf("help command created output: temporary=%v destination=%v", temporaryCreated, destinationCreated)
+			}
+
+			got := stdout.String()
+			if want == "" {
+				want = got
+			} else if got != want {
+				t.Fatalf("help output = %q, want same output as previous form %q", got, want)
+			}
+			for _, fragment := range []string{
+				"Usage:\n  fpin [OPTIONS] [FILE]",
+				"Save stdin to a file and print its absolute path.",
+				"-0, --null",
+				"-h, --help",
+				"--version",
+				"OS temporary directory",
+			} {
+				if !strings.Contains(got, fragment) {
+					t.Fatalf("help output = %q, want it to contain %q", got, fragment)
+				}
+			}
+		})
+	}
+}
+
 func TestProcessReportsOutputClosure(t *testing.T) {
 	if runtime.GOOS == "windows" || runtime.GOOS == "js" || runtime.GOOS == "plan9" || runtime.GOOS == "wasip1" {
 		t.Skip("closed stdout pipe behavior is Unix-specific")
@@ -90,6 +142,7 @@ func TestProcessReportsOutputClosure(t *testing.T) {
 		destination bool
 	}{
 		{name: "version", args: []string{"--version"}},
+		{name: "help", args: []string{"--help"}},
 		{name: "newline", destination: true},
 		{name: "null", args: []string{"-0"}, destination: true},
 	}
@@ -178,38 +231,51 @@ func TestRunRejectsVersionWithOtherArgumentsWithoutChangingDestination(t *testin
 	}
 }
 
-func TestRunReportsVersionStdoutFailureWithoutReadingStdinOrCreatingOutput(t *testing.T) {
-	stdin := &trackingReader{}
-	var stderr bytes.Buffer
-	var temporaryCreated, destinationCreated bool
-	createTemporary := func() (string, io.WriteCloser, error) {
-		temporaryCreated = true
-		return "unexpected-temporary", &trackingWriteCloser{}, nil
-	}
-	createDestination := func(string) (io.WriteCloser, error) {
-		destinationCreated = true
-		return &trackingWriteCloser{}, nil
+func TestRunReportsInformationalStdoutFailureWithoutReadingStdinOrCreatingOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantAction string
+	}{
+		{name: "version", args: []string{"--version"}, wantAction: "write version"},
+		{name: "help", args: []string{"--help"}, wantAction: "write help"},
 	}
 
-	code := runWithCreators(
-		[]string{"--version"},
-		stdin,
-		&errorWriter{err: errors.New("stdout failed")},
-		&stderr,
-		createTemporary,
-		createDestination,
-	)
-	if code != 1 {
-		t.Fatalf("runWithCreators() exit code = %d, want 1", code)
-	}
-	if stderr.Len() == 0 {
-		t.Fatal("stderr is empty, want diagnostic")
-	}
-	if stdin.read {
-		t.Fatal("version command read stdin")
-	}
-	if temporaryCreated || destinationCreated {
-		t.Fatalf("version command created output: temporary=%v destination=%v", temporaryCreated, destinationCreated)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdin := &trackingReader{}
+			var stderr bytes.Buffer
+			var temporaryCreated, destinationCreated bool
+			createTemporary := func() (string, io.WriteCloser, error) {
+				temporaryCreated = true
+				return "unexpected-temporary", &trackingWriteCloser{}, nil
+			}
+			createDestination := func(string) (io.WriteCloser, error) {
+				destinationCreated = true
+				return &trackingWriteCloser{}, nil
+			}
+
+			code := runWithCreators(
+				tc.args,
+				stdin,
+				&errorWriter{err: errors.New("stdout failed")},
+				&stderr,
+				createTemporary,
+				createDestination,
+			)
+			if code != 1 {
+				t.Fatalf("runWithCreators() exit code = %d, want 1", code)
+			}
+			if !strings.Contains(stderr.String(), tc.wantAction) {
+				t.Fatalf("stderr = %q, want %q diagnostic", stderr.String(), tc.wantAction)
+			}
+			if stdin.read {
+				t.Fatalf("%s command read stdin", tc.name)
+			}
+			if temporaryCreated || destinationCreated {
+				t.Fatalf("%s command created output: temporary=%v destination=%v", tc.name, temporaryCreated, destinationCreated)
+			}
+		})
 	}
 }
 
@@ -319,6 +385,8 @@ func TestRunAcceptsSeparatorBoundariesAndLiteralDestinations(t *testing.T) {
 		{name: "separator temporary", args: []string{"--"}, terminator: '\n'},
 		{name: "separator null temporary", args: []string{"-0", "--"}, terminator: 0},
 		{name: "literal version destination", args: []string{"--"}, destination: "--version", terminator: '\n'},
+		{name: "literal help destination", args: []string{"--"}, destination: "--help", terminator: '\n'},
+		{name: "literal short help destination", args: []string{"--"}, destination: "-h", terminator: '\n'},
 		{name: "literal null destination", args: []string{"--"}, destination: "-0", terminator: '\n'},
 		{name: "literal dash destination", args: []string{"--"}, destination: "-", terminator: '\n'},
 	}
@@ -473,6 +541,14 @@ func TestRunRejectsInvalidArgumentsWithoutTouchingIO(t *testing.T) {
 		{name: "null with version", args: []string{"-0", "--version"}},
 		{name: "version with null", args: []string{"--version", "-0"}},
 		{name: "version with separator", args: []string{"--version", "--"}},
+		{name: "help with destination", args: []string{"--help", "output"}},
+		{name: "destination with help", args: []string{"output", "--help"}},
+		{name: "help with null", args: []string{"--help", "--null"}},
+		{name: "null with help", args: []string{"--null", "--help"}},
+		{name: "help with separator", args: []string{"--help", "--"}},
+		{name: "duplicate help", args: []string{"--help", "--help"}},
+		{name: "short help with destination", args: []string{"-h", "output"}},
+		{name: "destination with short help", args: []string{"output", "-h"}},
 	}
 
 	for _, tc := range tests {
