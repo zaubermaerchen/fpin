@@ -13,7 +13,7 @@ With no arguments, `fpin` writes standard input to a new temporary file. With `F
 ### Behavior
 
 - A successful temporary file remains until the caller removes it.
-- If writing or closing a temporary file fails, `fpin` removes it.
+- If writing or closing a temporary file fails, `fpin` attempts to remove it; it may remain if removal fails.
 - A specified `FILE` may be truncated or partially written on failure; it is not rolled back.
 - Failures produce a diagnostic on standard error and a nonzero exit status, without a usable output path on standard output.
 - Returned paths are absolute, but symlink components are not canonicalized.
@@ -31,7 +31,10 @@ use-command "$path"
 To choose the output file explicitly (the parent directory must already exist):
 
 ```bash
-producer | fpin ./output.bin
+set -o pipefail
+if ! producer | fpin ./output.bin; then
+  exit 1
+fi
 ```
 
 ## Version
