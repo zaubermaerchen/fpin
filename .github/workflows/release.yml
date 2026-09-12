@@ -196,8 +196,32 @@ jobs:
           cd dist
           mapfile -t archives < <(find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' | LC_ALL=C sort)
           test "${#archives[@]}" -eq 7
-          gh release create "$VERSION" \
-            --verify-tag \
-            --title "$VERSION" \
-            --generate-notes \
-            "${archives[@]}" SHA256SUMS
+          if [[ "$VERSION" == "v0.1.0" ]]; then
+            notes_file="$(mktemp)"
+            trap 'rm -f "$notes_file"' EXIT
+            cat >"$notes_file" <<'EOF'
+          ## fpin v0.1.0
+
+          `fpin` converts stdin into a file path: it writes stdin to a file and prints the resulting absolute path, making it easy to connect stream-producing commands to tools that require filename arguments.
+
+          Initial features:
+
+          - Write stdin to a specified file or an OS temporary file.
+          - Print the resulting absolute path only after a successful write and close.
+          - NUL-terminated output with `-0` / `--null` for safe composition with tools such as `xargs -0`.
+          - `-h` / `--help` and `--version` support.
+          - Cross-platform Go implementation.
+          EOF
+            gh release create "$VERSION" \
+              --verify-tag \
+              --title "$VERSION" \
+              --generate-notes \
+              --notes-file "$notes_file" \
+              "${archives[@]}" SHA256SUMS
+          else
+            gh release create "$VERSION" \
+              --verify-tag \
+              --title "$VERSION" \
+              --generate-notes \
+              "${archives[@]}" SHA256SUMS
+          fi
