@@ -5,10 +5,12 @@
 ## Usage
 
 ```text
-fpin [FILE]
+fpin [-0|--null] [--] [FILE]
 ```
 
 With no arguments, `fpin` writes standard input to a new temporary file. With `FILE`, it writes to that path, overwriting an existing file. Parent directories are not created. On success, the absolute output path followed by a newline is written to standard output.
+
+Use `-0` or `--null` to terminate the successful output path with a single NUL byte instead of a newline. Options must precede `FILE`; `--` ends option parsing so a destination beginning with `-` can be used. Unknown or duplicate options, extra arguments, and combining `--version` with any other argument fail without reading standard input or changing a destination.
 
 ### Behavior
 
@@ -35,6 +37,18 @@ set -o pipefail
 if ! producer | fpin ./output.bin; then
   exit 1
 fi
+```
+
+For arbitrary path names, use NUL mode with `xargs -0`:
+
+```bash
+records=$(mktemp) || exit 1
+trap 'rm -f "$records"' EXIT
+set -o pipefail
+if ! producer | fpin -0 >"$records"; then
+  exit 1
+fi
+xargs -0 -n 1 use-command <"$records"
 ```
 
 ## Version
